@@ -8,8 +8,8 @@ from os import sys
 import pickle
 import matplotlib.pyplot as plt
 
-ALPHA = 10
-BETA = 10
+ALPHA = 1
+BETA = 100
 
 def sample_from_pareto(a, m, size):
     s = np.random.pareto(a, size) + m
@@ -113,7 +113,7 @@ def expected_contribution_utility(prob, existing_expected_contribution):
     #original_util = pow(ALPHA,BETA*math.log1p(existing_expected_contribution))
     #new_util = pow(ALPHA,BETA*math.log1p(existing_expected_contribution+1))
     original_util = ALPHA*math.log1p(BETA*existing_expected_contribution)
-    new_util = ALPHA*math.log1p(BETA*existing_expected_contribution+1)
+    new_util = ALPHA*math.log1p(BETA*(existing_expected_contribution+1))
 
     return prob*(new_util - original_util)
 
@@ -299,12 +299,14 @@ def print_results(expected_contributions,community_utility_stages,request_count_
     print compute_community_utility(expected_contributions)
     print "contribution distribution"
     print_distribution(expected_contributions) 
+    '''
     fig = plt.figure()
     ax = fig.add_subplot(111)
     plt.plot(request_count_stages, community_utility_stages, '-o')
     for i,j in zip(request_count_stages,community_utility_stages):
         ax.annotate(str(j),xy=(i,j))
     plt.show()
+    '''
     return   
 
 def generate_data():
@@ -315,7 +317,7 @@ def generate_data():
 
     print len(paper_authors)
 
-    resources_id = sample_resource_papers(len(paper_authors),10000)
+    resources_id = sample_resource_papers(len(paper_authors),1000)
 
     data = {}
 
