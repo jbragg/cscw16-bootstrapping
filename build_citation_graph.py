@@ -1,3 +1,12 @@
+"""build_citation_graph.py
+
+@wenhuang wrote most of this.
+
+@jbragg adapted generate_data(n_authors, n_resources, n_links, p_cite, p_use),
+which he plans to import as a subroutine in a separate experiment file.
+
+"""
+
 
 import numpy as np
 import csv
@@ -86,7 +95,8 @@ def rich_get_richer(author_publication_count, p, link_count):
 
     return paper_authors, author_papers, paper_links, reverse_paper_links
 
-def separate_resources(individual_author_papers, paper_links, resouces_id):
+def separate_resources(individual_author_papers, paper_links, resouces_id,
+                       p_use=0.45):
     author_citations = set()
     used_resources = []
     cited_resources = []
@@ -99,7 +109,7 @@ def separate_resources(individual_author_papers, paper_links, resouces_id):
 
     for r in resouces_id:
         if r in author_citations:
-            if random.random() < 0.45:
+            if random.random() < p_use:
                 used_resources.append(r)
             else:
                 cited_resources.append(r)
@@ -309,29 +319,77 @@ def print_results(expected_contributions,community_utility_stages,request_count_
     '''
     return   
 
-def generate_data():
+def generate_data(n_authors, n_resources, n_links, p_cite, p_use):
+    """Generate synthetic data.
 
-    author_publication_count = sample_from_data('authors_publication.csv',1000)
-    #print max(author_publication_count)
-    paper_authors, author_papers, paper_links, reverse_paper_links = rich_get_richer(author_publication_count, 0.5, 10)
+    Algorithm is as follows (n_authors are sampled).
+    - Sample an author (comes with a number of papers cited by that author,
+      scraped from the web).
+    - For each of the author's papers, create n_links citations by either
+      citing a (random) previously visited paper with probability p_cite,
+      otherwise citing a (random) paper previously cited by a previous paper.
+    - After papers and citations are generated, randomly select n_resources
+      papers to be 'resource' papers.
+    - For each citation, mark the cited paper as 'used' with probability p_use.
+    
+    Args:
+        n_authors:      Number of authors (must be smaller than 266,101,
+                        the number of authors scraped).
+        n_resources:    Number of resources (papers) that might receive
+                        comments.
+        n_links:        Number of citations for each paper.
+        p_cite:         Probability a paper cites a previously generated
+                        paper. (1-p_cite) is the probability a paper instead
+                        cites a paper cited by a previously generated paper.
+        p_use:          Probability an author _really_ used a paper cited
+                        in one of the author's papers.
 
-    print len(paper_authors)
+    Returns:
+        Dictionary with the following keys:
+            author_papers:       {author_id: [paper_ids]}
+            paper_links:         {paper_id: [paper_ids]}
+            reverse_paper_links: {paper_id: [paper_ids]} 
+            resources_id:        [paper_ids]
+            author_resources:    {author_id: ([cited_used_resource_ids],
+                                              [cited_unused_resource_ids],
+                                              [uncited_resource_ids])}
+    """
+    author_publication_count = sample_from_data('authors_publication.csv',
+                                                n_authors)
+    paper_authors, author_papers, paper_links, reverse_paper_links = \
+        rich_get_richer(author_publication_count, p_cite, n_links)
 
-    resources_id = sample_resource_papers(len(paper_authors),1000)
-
-    data = {}
-
+    resources_id = sample_resource_papers(len(paper_authors), n_resources)
+    
+    data = dict()
     data['author_papers'] = author_papers
     data['paper_links'] = paper_links
     data['reverse_paper_links'] = reverse_paper_links
     data['resources_id'] = resources_id
+
+    data['author_resources'] = dict()
+    for a in author_papers:
+        used_resources, cited_resources, not_cited_resources = \
+            separate_resources(author_papers[a], paper_links,
+                               resources_id, p_use)
+        data['author_resources'][a] = (used_resources, cited_resources,
+                                       not_cited_resources)
+    return data
+
+
+def generate_data_file():
+
+    data = generate_data(n_authors=1000, n_resources=1000, n_links=10,
+                         p_cite=0.5, p_use=0.45)
+    del data['author_resources']  # wasn't there before
 
     fout = open('citation_graph','w')
 
     pickle.dump(data, fout)
     print "finish generating and dumping data"
     fout.close()
-    return author_papers, paper_links, reverse_paper_links, resources_id
+    return (data['author_papers'], data['paper_links'],
+            data['reverse_paper_links'], data['resources_id'])
 
 def load_data():
 
@@ -349,9 +407,9 @@ def main():
     loading = sys.argv[2]
 
     if loading != '1':
-        author_papers, paper_links, reverse_paper_links, resources_id = generate_data()
+        author_papers, paper_links, reverse_paper_links, resources_id = generate_data_file()
     else:
-        author_papers, paper_links, reverse_paper_links, resources_id = load_data()
+        author_papers, paper_links, reverse_paper_links, resources_id = load_data_file()
 
     assign_resources(author_papers, paper_links, reverse_paper_links, resources_id, method)
 
