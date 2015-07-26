@@ -7,7 +7,8 @@ import seaborn as sns
 
 def plot_from_file(f, outname):
     df = pd.read_csv(f)
-    sns.tsplot(df, time='t', unit='iteration', condition='policy', value='v')
+    sns.tsplot(df, time='t', unit='iteration', condition='policy', value='v',
+               ci=95)
     plt.savefig(outname)
 
 if __name__ == '__main__':
