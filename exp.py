@@ -7,12 +7,31 @@ import collections
 import operator
 import itertools
 import copy
+import csv
+import functools as ft
+import multiprocessing as mp
+import logging
 from build_citation_graph import generate_data
 
 ALPHA = 1
 BETA = 100
 
+logger = mp.log_to_stderr()
+logger.setLevel(logging.INFO)
+
 #-------- helpers ---------
+def f_arg(f, d):
+    """Return pair with arg and function value"""
+    return (d, f(d))
+
+#def f_no_arg(f, arg):
+#    """Return function that ignores arg keyword"""
+#    return lambda d: f(dict((k,v) for k in d if k != arg))
+
+def f_expand(f, d):
+    """Call f with d expanded"""
+    return f(**d)
+
 def powerset(iterable):
     "powerset([1,2,3]) --> () (1,) (2,) (3,) (1,2) (1,3) (2,3) (1,2,3)"
     s = list(iterable)
@@ -109,7 +128,7 @@ def expected_utilities(probs, utilities_by_resource={},
         print 'max size: {}'.format(max_requests_by_resource)
     return u
 
-def single_run(probs, policy='greedy', ignore_uncited=False):
+def single_run(probs, policy='greedy', ignore_uncited=False, **args):
     """Execute a single policy run
 
     Policies are as follows:
@@ -140,7 +159,7 @@ def single_run(probs, policy='greedy', ignore_uncited=False):
                 s, utilities_by_resource, [next_request[1]])
             #utilities_by_resource = expected_utilities(s)
             utilities.append(sum(utilities_by_resource.itervalues()))
-            print len(authors_rand), utilities[-1]
+            logger.info('{}: {}'.format(len(authors_rand), utilities[-1]))
     elif policy == 'greedy':
         authors_rand = list(authors)
         random.shuffle(authors_rand)
@@ -156,7 +175,7 @@ def single_run(probs, policy='greedy', ignore_uncited=False):
             utilities_by_resource = expected_utilities(
                 s, utilities_by_resource, [next_request[1]])
             utilities.append(sum(utilities_by_resource.itervalues()))
-            print len(authors_rand), utilities[-1]
+            logger.info('{}: {}'.format(len(authors_rand), utilities[-1]))
     elif policy == 'dt':
         marginal_utilities = dict((x, None) for x in probs)
         next_request = None
@@ -186,16 +205,60 @@ def single_run(probs, policy='greedy', ignore_uncited=False):
             for k in [k for k in marginal_utilities if
                       k[0] == next_request[0]]:
                 del marginal_utilities[k]
-            print len(set(a for a, r in marginal_utilities)), utilities[-1]
+            logger.info('{}: {}'.format(
+                len(set(a for a, r in marginal_utilities)), utilities[-1]))
     else: 
         raise NotImplementedError
 
     return utilities
 
+
+def run_exp(output_file, policies=['random', 'greedy', 'dt'], iterations=100):
+    fp = open(output_file, 'w')
+    writer = csv.DictWriter(fp, fieldnames=['iteration', 'policy', 't', 'v'])
+    writer.writeheader()
+
+    # Create worker processes.
+    def init_worker():
+        """Function to make sure everyone happily exits on KeyboardInterrupt
+
+        See https://stackoverflow.com/questions/1408356/
+        keyboard-interrupts-with-pythons-multiprocessing-pool
+        """
+        import signal
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    pool = mp.Pool(initializer=init_worker)
+    all_probs = [(i, calculate_probabilities()) for i in xrange(iterations)]
+    try:
+        args = itertools.product(policies, all_probs)
+        args = ({'probs': a[1][1],
+                 'policy': a[0],
+                 'iteration': a[1][0]} for a in args)
+        f = ft.partial(f_arg, ft.partial(f_expand, single_run))
+        for d, v in pool.imap_unordered(f, args):
+            print 'saving {} ({})'.format(d['policy'], d['iteration'])
+            del d['probs']
+            for t in xrange(len(v)):
+                d_prime = copy.copy(d)
+                d_prime['t'] = t
+                d_prime['v'] = v[t]
+                writer.writerow(d_prime)
+        pool.close()
+        pool.join()
+    except KeyboardInterrupt:
+        logger.warn('Control-C pressed')
+        pool.terminate()
+    finally:
+        fp.close()
+
 def main():
-    probs = calculate_probabilities()
+    #probs = calculate_probabilities()
     #print single_run(probs, policy='random')
-    print single_run(probs, policy='dt')
+    #print single_run(probs, policy='dt')
+
+
+    #run_exp('out.csv', policies=['random', 'greedy'], iterations=3)
+    run_exp('out.csv', policies=['random'], iterations=3)
 
     #print len(set(a for a, r in probs))
     #print len(set(r for a, r in probs))
