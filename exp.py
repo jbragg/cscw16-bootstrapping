@@ -3,6 +3,7 @@
 from __future__ import division
 import math
 import random
+import numpy as np
 import collections
 import operator
 import itertools
@@ -11,6 +12,7 @@ import csv
 import functools as ft
 import multiprocessing as mp
 import logging
+import argparse
 from build_citation_graph import generate_data
 
 ALPHA = 1
@@ -20,6 +22,29 @@ logger = mp.log_to_stderr()
 logger.setLevel(logging.INFO)
 
 #-------- helpers ---------
+def truncated_normal_sample(u, std, n):
+    """Sample from a N(u, std) but round to nearest of n evenly-spaced bins.
+
+    Bins are evenly spaced across the 95% confidence interval.
+    Ties broken randomly.
+
+    """
+    left = max(0, u - std * 1.96 / 2)
+    right = min(1, u + std * 1.96 / 2)
+
+    endpoints = np.linspace(left, right, n + 1)
+    midpoints = []
+    for p1, p2 in zip(endpoints[:-1], endpoints[1:]):
+        midpoints.append((p2 + p1) / 2)
+
+    v = np.random.normal(loc=u, scale=std, size=None)
+
+    distances = [abs(p - v) for p in midpoints]
+    min_distance = min(distances)
+    closest_midpoints = [p for i, p in enumerate(midpoints) if
+                         distances[i] == min_distance]
+    return random.choice(closest_midpoints)
+
 def f_arg(f, d):
     """Return pair with arg and function value"""
     return (d, f(d))
@@ -56,6 +81,29 @@ def expectation_over_powerset(d, f):
                    (d[k] if k in s else (1 - d[k]) for k in d),
                    1)
         v += p * f(s)
+    return v
+
+def expectation_bounded(d, f):
+    """Return expectation that exploits bounded number of probability classes.
+
+    Assumes items are identical from the point of view of function f.
+    Could be modified to allow for classes of items.
+
+    """
+    probs_items = collections.defaultdict(list)
+    for k in d:
+        probs_items[d[k]].append(k)
+
+    probs = sorted(probs_items)
+    v = 0
+    for tup in itertools.product(*(xrange(len(probs_items[k]) + 1) for
+                                   k in probs)):
+        pr = 1
+        items = []
+        for p, n in zip(probs, tup):
+            pr *= p ** n * (1 - p) ** (len(probs_items[p]) - n)
+            items += probs_items[p][:n]
+        v += pr * f(items)
     return v
 
 #---------- main functions ---------
@@ -98,7 +146,8 @@ def f_utility(requests):
     return sum(f(d[r]) for r in d)
 
 def expected_utilities(probs, utilities_by_resource={},
-                       resources_modified=None, verbose=False):
+                       resources_modified=None, verbose=False,
+                       exploit_bounded=True):
     """Expected utilities of contributions resulting from a set of requests.
 
     Recalculate only resources in resources_modified if
@@ -123,9 +172,12 @@ def expected_utilities(probs, utilities_by_resource={},
     for r in resources:
         probs_r = dict((k, probs[k]) for k in probs if k[1] == r)
         max_requests_by_resource = max(max_requests_by_resource, len(probs_r))
-        u[r] = expectation_over_powerset(probs_r, f_utility)
+        if exploit_bounded:
+            u[r] = expectation_bounded(probs_r, f_utility)
+        else:
+            u[r] = expectation_over_powerset(probs_r, f_utility)
     if verbose:
-        print 'max size: {}'.format(max_requests_by_resource)
+        logger.info('max size: {}'.format(max_requests_by_resource))
     return u
 
 def single_run(probs, policy='greedy', ignore_uncited=False, **args):
@@ -139,7 +191,7 @@ def single_run(probs, policy='greedy', ignore_uncited=False, **args):
                             of contribution.
         policy:
         ignore_uncited:     Don't use uncited items, since they have
-                            probability 0.
+                            probability 0. NOT IMPLEMENTED.
 
     """
     authors = set(a for a, r in probs)
@@ -243,6 +295,7 @@ def run_exp(output_file, policies=['random', 'greedy', 'dt'], iterations=100):
                 d_prime['t'] = t
                 d_prime['v'] = v[t]
                 writer.writerow(d_prime)
+            fp.flush()
         pool.close()
         pool.join()
     except KeyboardInterrupt:
@@ -252,31 +305,13 @@ def run_exp(output_file, policies=['random', 'greedy', 'dt'], iterations=100):
         fp.close()
 
 def main():
-    #probs = calculate_probabilities()
-    #print single_run(probs, policy='random')
-    #print single_run(probs, policy='dt')
+    parser = argparse.ArgumentParser(description='Run')
+    parser.add_argument('--policies', '-p', type=str, nargs='*')
+    parser.add_argument('--iterations', '-i', type=int, default=10)
+    parser.add_argument('--outfile', '-o', type=str, default='out.csv')
+    args = parser.parse_args()
 
-
-    #run_exp('out.csv', policies=['random', 'greedy'], iterations=3)
-    run_exp('out.csv', policies=['random'], iterations=3)
-
-    #print len(set(a for a, r in probs))
-    #print len(set(r for a, r in probs))
-    #print len(probs)
-    #print collections.Counter(probs.values())
-
-    #print utility(probs)
-    #print utility(random.sample(probs, int(round(0.9 * len(probs)))))
-    #print utility(random.sample(probs, int(round(0.8 * len(probs)))))
-    #print utility(random.sample(probs, int(round(0.7 * len(probs)))))
-    #print utility(random.sample(probs, int(round(0.6 * len(probs)))))
-    #print utility(random.sample(probs, int(round(0.5 * len(probs)))))
-    #print utility(random.sample(probs, int(round(0.4 * len(probs)))))
-    #print utility(random.sample(probs, int(round(0.3 * len(probs)))))
-    #print utility(random.sample(probs, int(round(0.2 * len(probs)))))
-    #print utility(random.sample(probs, int(round(0.1 * len(probs)))))
-    #print utility(random.sample(probs, int(round(0 * len(probs)))))
-
+    run_exp(args.outfile, policies=args.policies, iterations=args.iterations)
 
 
 if __name__ == '__main__':
