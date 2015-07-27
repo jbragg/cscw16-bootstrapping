@@ -1,0 +1,21 @@
+[
+    {
+        "type": "greedy",
+        "author_order": "random"
+    },
+    {
+        "type": "greedy",
+        "author_order": "highest_prob"
+    },
+    {
+        "type": "random",
+        "author_order": "random"
+    },
+    {
+        "type": "random",
+        "author_order": "highest_prob"
+    },
+    {
+        "type": "dt"
+    }
+]

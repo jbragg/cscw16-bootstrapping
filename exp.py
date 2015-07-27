@@ -13,6 +13,7 @@ import functools as ft
 import multiprocessing as mp
 import logging
 import argparse
+import json
 from build_citation_graph import generate_data
 
 ALPHA = 1
@@ -180,7 +181,7 @@ def expected_utilities(probs, utilities_by_resource={},
         logger.info('max size: {}'.format(max_requests_by_resource))
     return u
 
-def single_run(probs, policy='greedy', ignore_uncited=False, **args):
+def single_run(probs, policy, ignore_uncited=False, **args):
     """Execute a single policy run
 
     Policies are as follows:
@@ -189,7 +190,7 @@ def single_run(probs, policy='greedy', ignore_uncited=False, **args):
     Args:
         probs:              Dictionary from (author, resource) to probability
                             of contribution.
-        policy:
+        policy:             Dictionary of policy settings.
         ignore_uncited:     Don't use uncited items, since they have
                             probability 0. NOT IMPLEMENTED.
 
@@ -200,23 +201,32 @@ def single_run(probs, policy='greedy', ignore_uncited=False, **args):
     utilities_by_resource = dict()
     utilities = []
     utilities.append(sum(utilities_by_resource.itervalues()))
-    if policy == 'random':
-        authors_rand = list(authors)
-        random.shuffle(authors_rand)
-        while len(authors_rand) > 0:
-            a = authors_rand.pop()
+
+    if 'author_order' in policy:
+        if policy['author_order'] == 'random':
+            authors_sorted = list(authors)
+            random.shuffle(authors_sorted)
+        elif policy['author_order'] == 'highest_prob':
+            # Sort in order of increasing highest probability, since
+            # later we use .pop() and traverse list in reverse.
+            authors_sorted = sorted(authors, key=lambda a: max(
+                probs[a, r] for r in resources))
+        else:
+            raise NotImplementedError
+
+    if policy['type'] == 'random':
+        while len(authors_sorted) > 0:
+            a = authors_sorted.pop()
             next_request = a, random.choice(resources)
             s[next_request] = probs[next_request]
             utilities_by_resource = expected_utilities(
                 s, utilities_by_resource, [next_request[1]])
             #utilities_by_resource = expected_utilities(s)
             utilities.append(sum(utilities_by_resource.itervalues()))
-            logger.info('{}: {}'.format(len(authors_rand), utilities[-1]))
-    elif policy == 'greedy':
-        authors_rand = list(authors)
-        random.shuffle(authors_rand)
-        while len(authors_rand) > 0:
-            a = authors_rand.pop()
+            logger.info('{}: {}'.format(len(authors_sorted), utilities[-1]))
+    elif policy['type'] == 'greedy':
+        while len(authors_sorted) > 0:
+            a = authors_sorted.pop()
             possible_requests = [(a, r) for r in resources]
             max_prob = max(probs[x] for x in possible_requests)
             requests_max_prob = [x for x in possible_requests if
@@ -227,8 +237,8 @@ def single_run(probs, policy='greedy', ignore_uncited=False, **args):
             utilities_by_resource = expected_utilities(
                 s, utilities_by_resource, [next_request[1]])
             utilities.append(sum(utilities_by_resource.itervalues()))
-            logger.info('{}: {}'.format(len(authors_rand), utilities[-1]))
-    elif policy == 'dt':
+            logger.info('{}: {}'.format(len(authors_sorted), utilities[-1]))
+    elif policy['type'] == 'dt':
         marginal_utilities = dict((x, None) for x in probs)
         next_request = None
         while len(marginal_utilities) > 0:
@@ -265,7 +275,7 @@ def single_run(probs, policy='greedy', ignore_uncited=False, **args):
     return utilities
 
 
-def run_exp(output_file, policies=['random', 'greedy', 'dt'], iterations=100):
+def run_exp(output_file, policies, iterations=100):
     fp = open(output_file, 'w')
     writer = csv.DictWriter(fp, fieldnames=['iteration', 'policy', 't', 'v'])
     writer.writeheader()
@@ -306,12 +316,13 @@ def run_exp(output_file, policies=['random', 'greedy', 'dt'], iterations=100):
 
 def main():
     parser = argparse.ArgumentParser(description='Run')
-    parser.add_argument('--policies', '-p', type=str, nargs='*')
+    parser.add_argument('--policies', '-p', type=argparse.FileType('r'))
     parser.add_argument('--iterations', '-i', type=int, default=10)
     parser.add_argument('--outfile', '-o', type=str, default='out.csv')
     args = parser.parse_args()
 
-    run_exp(args.outfile, policies=args.policies, iterations=args.iterations)
+    policies = json.load(args.policies)
+    run_exp(args.outfile, policies=policies, iterations=args.iterations)
 
 
 if __name__ == '__main__':
