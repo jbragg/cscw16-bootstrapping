@@ -15,7 +15,6 @@ import math
 import operator
 from os import sys
 import pickle
-import matplotlib.pyplot as plt
 
 ALPHA = 1
 BETA = 100

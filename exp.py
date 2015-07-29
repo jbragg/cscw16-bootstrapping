@@ -30,15 +30,19 @@ def truncated_normal_sample(u, std, n):
     Ties broken randomly.
 
     """
-    left = max(0, u - std * 1.96 / 2)
-    right = min(1, u + std * 1.96 / 2)
+    if std == 0:
+        return u
+    left = max(0, u - std * 1.96)
+    right = min(1, u + std * 1.96)
+    
+    v = None
+    while not (v >= left and v <= right):
+        v = np.random.normal(loc=u, scale=std, size=None)
 
     endpoints = np.linspace(left, right, n + 1)
     midpoints = []
     for p1, p2 in zip(endpoints[:-1], endpoints[1:]):
         midpoints.append((p2 + p1) / 2)
-
-    v = np.random.normal(loc=u, scale=std, size=None)
 
     distances = [abs(p - v) for p in midpoints]
     min_distance = min(distances)
@@ -49,10 +53,6 @@ def truncated_normal_sample(u, std, n):
 def f_arg(f, d):
     """Return pair with arg and function value"""
     return (d, f(d))
-
-#def f_no_arg(f, arg):
-#    """Return function that ignores arg keyword"""
-#    return lambda d: f(dict((k,v) for k in d if k != arg))
 
 def f_expand(f, d):
     """Call f with d expanded"""
@@ -93,7 +93,8 @@ def expectation_bounded(d, f):
     """
     probs_items = collections.defaultdict(list)
     for k in d:
-        probs_items[d[k]].append(k)
+        if d[k] > 0:
+            probs_items[d[k]].append(k)
 
     probs = sorted(probs_items)
     v = 0
@@ -101,33 +102,62 @@ def expectation_bounded(d, f):
                                    k in probs)):
         pr = 1
         items = []
+        combinations = 1
         for p, n in zip(probs, tup):
-            pr *= p ** n * (1 - p) ** (len(probs_items[p]) - n)
+            total_len = len(probs_items[p])
+            pr *= p ** n * (1 - p) ** (total_len - n)
             items += probs_items[p][:n]
-        v += pr * f(items)
+            combinations *= math.factorial(total_len) / \
+                            math.factorial(total_len - n) /\
+                            math.factorial(n)
+        v += pr * f(items) * combinations
     return v
 
 #---------- main functions ---------
 def calculate_probabilities(n_authors=1000, n_resources=1000,
                             n_links=10, p_cite=0.5, p_use=0.45,
                             p_response_used=0.059,
+                            p_response_used_std=0.0,
+                            p_response_used_bins=1,
                             p_response_unused=0.016,
-                            p_response_uncited=0.0):
-    """Return mapping from author-resource pairs to probability of response"""
+                            p_response_unused_std=0.0,
+                            p_response_unused_bins=1,
+                            p_response_uncited=0.0,
+                            p_response_uncited_std=0.0,
+                            p_response_uncited_bins=1):
+    """Return mapping from author-resource pairs to probability of response
+    
+    Returns:
+        Tuple of (true_probabilities), (estimated_probabilities)
+    """
     data = generate_data(n_authors, n_resources, n_links, p_cite, p_use)
     authors = data['author_papers'].keys()
     resources = data['resources_id']
 
-    probs = dict()
+    probs_true = dict()
+    probs_estimated = dict()
     for a in authors:
         used, unused, uncited = data['author_resources'][a] 
+        # TODO: Sample here.
         for r in used:
-            probs[a, r] = p_response_used
+            probs_estimated[a, r] = p_response_used
+            probs_true[a, r] = truncated_normal_sample(p_response_used,
+                                                       p_response_used_std,
+                                                       p_response_used_bins)
         for r in unused:
-            probs[a, r] = p_response_unused
+            probs_estimated[a, r] = p_response_unused
+            probs_true[a, r] = truncated_normal_sample(p_response_unused,
+                                                       p_response_unused_std,
+                                                       p_response_unused_bins)
         for r in uncited:
-            probs[a, r] = p_response_uncited
-    return probs
+            probs_estimated[a, r] = p_response_uncited
+            probs_true[a, r] = truncated_normal_sample(p_response_uncited,
+                                                       p_response_uncited_std,
+                                                       p_response_uncited_bins)
+    return probs_true, probs_estimated
+
+def f_utility_h(lst):
+    return ALPHA * math.log1p(BETA * len(lst))
 
 def f_utility(requests):
     """Utility of contributions resulting from a set of requests.
@@ -143,64 +173,89 @@ def f_utility(requests):
     for a, r in requests:
         d[r].append(a)
 
-    f = lambda lst: ALPHA * math.log1p(BETA * len(lst))
+    f = f_utility_h
     return sum(f(d[r]) for r in d)
 
-def expected_utilities(probs, utilities_by_resource={},
-                       resources_modified=None, verbose=False,
-                       exploit_bounded=True):
-    """Expected utilities of contributions resulting from a set of requests.
+class Evaluator():
+    def __init__(self, probs, f, exploit_bounded=True):
+        """
 
-    Recalculate only resources in resources_modified if
-    resources_modified is not None.
-    
-    Args:
-        probs:                  Dictionary from (author, resource) pairs to
-                                probability of contribution.
-        utilities_by_resource:  Dictionary of old utilities by resource.
-        resources_modified:     List of resources modified since last result.
+        Args:
+            probs:                  Dictionary from (author, resource) pairs to
+                                    probability of contribution.
+            exploit_bounded:        Take advantage of bounded number of
+                                    probability classes.
 
-    Returns:
-        Dictionary from resource to expected utility
+        """
+        self.probs = probs
+        self.f = f
+        self.exploit_bounded = exploit_bounded
+        self.utilities_by_resource = dict()
+        self.requests_by_resource = collections.defaultdict(set)
+        self.utilities = [f([])]
 
-    """
-    if resources_modified is not None:
-        resources = resources_modified
-    else:
-        resources = list(set(r for a, r in probs))
-    max_requests_by_resource = 0
-    u = copy.copy(utilities_by_resource)
-    for r in resources:
-        probs_r = dict((k, probs[k]) for k in probs if k[1] == r)
-        max_requests_by_resource = max(max_requests_by_resource, len(probs_r))
-        if exploit_bounded:
-            u[r] = expectation_bounded(probs_r, f_utility)
-        else:
-            u[r] = expectation_over_powerset(probs_r, f_utility)
-    if verbose:
-        logger.info('max size: {}'.format(max_requests_by_resource))
-    return u
+    def deepcopy_ignore_probs(self):
+        r = copy.copy(self)
+        r.utilities_by_resource = copy.deepcopy(self.utilities_by_resource)
+        r.requests_by_resource = copy.deepcopy(self.requests_by_resource)
+        r.utilities = copy.deepcopy(self.utilities)
+        return r
 
-def single_run(probs, policy, ignore_uncited=False, **args):
+    def add(self, x):
+        """Add x to set of requests.
+        
+        Recomputes utility for that resource and adds total expected utility
+        to list of utilities.
+
+        """
+        a, r = x
+        if x in self.requests_by_resource[r]:
+            raise Exception('Already issued request')
+        self.requests_by_resource[r].add(x)
+        if self.probs[a, r] > 0:
+            probs_r = dict((x_, self.probs[x_]) for
+                           x_ in self.requests_by_resource[r])
+            if self.exploit_bounded:
+                self.utilities_by_resource[r] = expectation_bounded(
+                    probs_r, self.f)
+            else:
+                self.utilities_by_resource[r] = expectation_over_powerset(
+                    probs_r, self.f)
+        self.utilities.append(sum(self.utilities_by_resource.itervalues()))
+
+    def max_resource_requests(self):
+        """Return maximum requests issued for any resource."""
+        return max(len(x) for x in requests_by_resource.itervalues())
+
+def single_run(probs_true, probs_estimated, policy, **args):
     """Execute a single policy run
 
     Policies are as follows:
         'random': Select a random author, assign that author a random resource.
 
     Args:
-        probs:              Dictionary from (author, resource) to probability
-                            of contribution.
+        probs_true:         Dictionary from (author, resource) to true
+                            probability of contribution.
+        probs_estimated:    Dictionary from (author, resource) to estimated
+                            probability of contribution.
         policy:             Dictionary of policy settings.
-        ignore_uncited:     Don't use uncited items, since they have
-                            probability 0. NOT IMPLEMENTED.
 
     """
-    authors = set(a for a, r in probs)
-    resources = list(set(r for a, r in probs))
-    s = dict()  # Final set of requests to issue
-    utilities_by_resource = dict()
-    utilities = []
-    utilities.append(sum(utilities_by_resource.itervalues()))
+    authors = set(a for a, r in probs_estimated)
+    resources = list(set(r for a, r in probs_estimated))
+    evaluator_true = Evaluator(probs_true, f_utility,
+                               exploit_bounded=True)
+    evaluator_estimated  = Evaluator(probs_estimated, f_utility,
+                                     exploit_bounded=True)
+
+    def update(request):
+        """Execute code that should be run after each decision."""
+        evaluator_true.add(next_request)
+        evaluator_estimated.add(next_request)
+        logger.info('{}: {}'.format(policy['type'],
+                                    len(evaluator_true.utilities),
+                                    evaluator_true.utilities[-1],
+                                    evaluator_estimated.utilities[-1]))
 
     if 'author_order' in policy:
         if policy['author_order'] == 'random':
@@ -210,7 +265,7 @@ def single_run(probs, policy, ignore_uncited=False, **args):
             # Sort in order of increasing highest probability, since
             # later we use .pop() and traverse list in reverse.
             authors_sorted = sorted(authors, key=lambda a: max(
-                probs[a, r] for r in resources))
+                probs_estimated[a, r] for r in resources))
         else:
             raise NotImplementedError
 
@@ -218,66 +273,53 @@ def single_run(probs, policy, ignore_uncited=False, **args):
         while len(authors_sorted) > 0:
             a = authors_sorted.pop()
             next_request = a, random.choice(resources)
-            s[next_request] = probs[next_request]
-            utilities_by_resource = expected_utilities(
-                s, utilities_by_resource, [next_request[1]])
-            #utilities_by_resource = expected_utilities(s)
-            utilities.append(sum(utilities_by_resource.itervalues()))
-            logger.info('{}: {}'.format(len(authors_sorted), utilities[-1]))
+            update(next_request)
     elif policy['type'] == 'greedy':
         while len(authors_sorted) > 0:
             a = authors_sorted.pop()
             possible_requests = [(a, r) for r in resources]
-            max_prob = max(probs[x] for x in possible_requests)
+            max_prob = max(probs_estimated[x] for x in possible_requests)
             requests_max_prob = [x for x in possible_requests if
-                                 probs[x] == max_prob]
+                                 probs_estimated[x] == max_prob]
             next_request = random.choice(requests_max_prob)
-            # TODO: Duplicate code.
-            s[next_request] = probs[next_request]
-            utilities_by_resource = expected_utilities(
-                s, utilities_by_resource, [next_request[1]])
-            utilities.append(sum(utilities_by_resource.itervalues()))
-            logger.info('{}: {}'.format(len(authors_sorted), utilities[-1]))
+            update(next_request)
     elif policy['type'] == 'dt':
-        marginal_utilities = dict((x, None) for x in probs)
+        marginal_utilities = dict((x, None) for x in probs_estimated)
         next_request = None
         while len(marginal_utilities) > 0:
-            last_utility = utilities[-1]
+            last_utility = evaluator_estimated.utilities[-1]
             if next_request is None:
                 needs_update = marginal_utilities
             else:
                 needs_update = [x for x in marginal_utilities if
                                 x[1] == next_request[1]]
             for x in needs_update:
-                s_prime = copy.copy(s)
-                s_prime[x] = probs[x]
-                utilities_by_resource_prime = expected_utilities(
-                    s_prime, utilities_by_resource, [x[1]])
-                marginal_utilities[x] = sum(
-                    utilities_by_resource_prime.itervalues()) - utilities[-1]
+                evaluator_prime = evaluator_estimated.deepcopy_ignore_probs()
+                evaluator_prime.add(x)
+                marginal_utilities[x] = evaluator_prime.utilities[-1] - \
+                                        evaluator_prime.utilities[-2]
             max_marginal_utility = marginal_utilities[
                 max(marginal_utilities, key=marginal_utilities.get)]
             requests_max_marginal_utility = [
                 x for x in marginal_utilities if
                 marginal_utilities[x] == max_marginal_utility]
             next_request = random.choice(requests_max_marginal_utility)
-            utilities.append(utilities[-1] + marginal_utilities[next_request])
+            update(next_request)
 
             # Remove other candidate requests for selected author.
             for k in [k for k in marginal_utilities if
                       k[0] == next_request[0]]:
                 del marginal_utilities[k]
-            logger.info('{}: {}'.format(
-                len(set(a for a, r in marginal_utilities)), utilities[-1]))
     else: 
         raise NotImplementedError
 
-    return utilities
+    return evaluator_true.utilities, evaluator_estimated.utilities
 
 
-def run_exp(output_file, policies, iterations=100):
-    fp = open(output_file, 'w')
-    writer = csv.DictWriter(fp, fieldnames=['iteration', 'policy', 't', 'v'])
+def run_exp(output_file, config, policies, iterations):
+    fp = open(output_file + '.csv', 'w')
+    writer = csv.DictWriter(
+        fp, fieldnames=['iteration', 'policy', 't', 'u_true', 'u_estimated'])
     writer.writeheader()
 
     # Create worker processes.
@@ -289,21 +331,23 @@ def run_exp(output_file, policies, iterations=100):
         """
         import signal
         signal.signal(signal.SIGINT, signal.SIG_IGN)
+    all_probs = [(i, calculate_probabilities(**config)) for
+                 i in xrange(iterations)]
     pool = mp.Pool(initializer=init_worker)
-    all_probs = [(i, calculate_probabilities()) for i in xrange(iterations)]
     try:
-        args = itertools.product(policies, all_probs)
-        args = ({'probs': a[1][1],
-                 'policy': a[0],
-                 'iteration': a[1][0]} for a in args)
+        args = itertools.product(all_probs, policies)
+        args = ({'probs_true': a[0][1][0],
+                 'probs_estimated': a[0][1][1],
+                 'policy': a[1],
+                 'iteration': a[0][0]} for a in args)
         f = ft.partial(f_arg, ft.partial(f_expand, single_run))
-        for d, v in pool.imap_unordered(f, args):
+        for d, (u_true, u_estimated) in pool.imap_unordered(f, args):
             print 'saving {} ({})'.format(d['policy'], d['iteration'])
-            del d['probs']
-            for t in xrange(len(v)):
-                d_prime = copy.copy(d)
+            for t in xrange(len(u_true)):
+                d_prime = dict((k, d[k]) for k in ['policy', 'iteration'])
                 d_prime['t'] = t
-                d_prime['v'] = v[t]
+                d_prime['u_true'] = u_true[t]
+                d_prime['u_estimated'] = u_estimated[t]
                 writer.writerow(d_prime)
             fp.flush()
         pool.close()
@@ -316,13 +360,16 @@ def run_exp(output_file, policies, iterations=100):
 
 def main():
     parser = argparse.ArgumentParser(description='Run')
+    parser.add_argument('--config', '-c', type=argparse.FileType('r'))
     parser.add_argument('--policies', '-p', type=argparse.FileType('r'))
     parser.add_argument('--iterations', '-i', type=int, default=10)
-    parser.add_argument('--outfile', '-o', type=str, default='out.csv')
+    parser.add_argument('--outfile', '-o', type=str, default='out')
     args = parser.parse_args()
 
     policies = json.load(args.policies)
-    run_exp(args.outfile, policies=policies, iterations=args.iterations)
+    config = json.load(args.config)
+    run_exp(args.outfile, config=config, policies=policies,
+            iterations=args.iterations)
 
 
 if __name__ == '__main__':
