@@ -1,6 +1,7 @@
 import unittest
 import collections
 
+import copy
 import exp
 
 config_std = {
@@ -58,6 +59,20 @@ class TestExpectation(unittest.TestCase):
         self.assertAlmostEqual(
             exp.expectation_over_powerset(self.probs, self.f),
             exp.expectation_bounded(self.probs, self.f))
+
+class TestEvaluator(unittest.TestCase):
+    def setUp(self):
+        self.probs, _ = exp.calculate_probabilities(n_authors=100,
+                                                    n_resources=100)
+        self.evaluator = exp.Evaluator(self.probs, exp.f_utility)
+
+    def test_deepcopy(self):
+        old_evaluator = copy.deepcopy(self.evaluator)
+        evaluator2 = self.evaluator.deepcopy_ignore_probs()
+        evaluator2.add(self.probs.iterkeys().next())
+        self.assertEqual(old_evaluator, self.evaluator)
+        self.assertNotEqual(self.evaluator, evaluator2)
+
 
 if __name__ == '__main__':
     unittest.main()

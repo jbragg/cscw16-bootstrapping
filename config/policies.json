@@ -8,6 +8,11 @@
         "author_order": "highest_prob"
     },
     {
+        "type": "greedy",
+        "author_order": "highest_prob",
+        "ties": "first"
+    },
+    {
         "type": "random",
         "author_order": "random"
     },

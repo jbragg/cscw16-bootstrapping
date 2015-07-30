@@ -4,6 +4,7 @@ from __future__ import division
 import math
 import random
 import numpy as np
+import os
 import collections
 import operator
 import itertools
@@ -114,8 +115,8 @@ def expectation_bounded(d, f):
     return v
 
 #---------- main functions ---------
-def calculate_probabilities(n_authors=1000, n_resources=1000,
-                            n_links=10, p_cite=0.5, p_use=0.45,
+def calculate_probabilities(n_authors=100, n_resources=100,
+                            n_links=29, p_cite=0.5, p_use=0.45,
                             p_response_used=0.059,
                             p_response_used_std=0.0,
                             p_response_used_bins=1,
@@ -227,6 +228,17 @@ class Evaluator():
         """Return maximum requests issued for any resource."""
         return max(len(x) for x in requests_by_resource.itervalues())
 
+    def __eq__(self, other):
+        if isinstance(other, self.__class__):
+            return (self.f == other.f and
+                    self.exploit_bounded == other.exploit_bounded and
+                    self.probs == other.probs and
+                    self.utilities == other.utilities and
+                    self.requests_by_resource == other.requests_by_resource and
+                    self.utilities_by_resource == other.utilities_by_resource)
+        else:
+            return False
+
 def single_run(probs_true, probs_estimated, policy, **args):
     """Execute a single policy run
 
@@ -281,7 +293,10 @@ def single_run(probs_true, probs_estimated, policy, **args):
             max_prob = max(probs_estimated[x] for x in possible_requests)
             requests_max_prob = [x for x in possible_requests if
                                  probs_estimated[x] == max_prob]
-            next_request = random.choice(requests_max_prob)
+            if policy['ties'] == 'random':
+                next_request = random.choice(requests_max_prob)
+            else:
+                next_request = requests_max_prob[0]
             update(next_request)
     elif policy['type'] == 'dt':
         marginal_utilities = dict((x, None) for x in probs_estimated)
@@ -345,6 +360,7 @@ def run_exp(output_file, config, policies, iterations):
             print 'saving {} ({})'.format(d['policy'], d['iteration'])
             for t in xrange(len(u_true)):
                 d_prime = dict((k, d[k]) for k in ['policy', 'iteration'])
+                d_prime['policy'] = json.dumps(d_prime['policy'])
                 d_prime['t'] = t
                 d_prime['u_true'] = u_true[t]
                 d_prime['u_estimated'] = u_estimated[t]
@@ -360,14 +376,32 @@ def run_exp(output_file, config, policies, iterations):
 
 def main():
     parser = argparse.ArgumentParser(description='Run')
-    parser.add_argument('--config', '-c', type=argparse.FileType('r'))
-    parser.add_argument('--policies', '-p', type=argparse.FileType('r'))
-    parser.add_argument('--iterations', '-i', type=int, default=10)
-    parser.add_argument('--outfile', '-o', type=str, default='out')
+    parser.add_argument('--config', '-c', type=argparse.FileType('r'),
+                        required=True)
+    parser.add_argument('--policies', '-p', type=argparse.FileType('r'),
+                        required=True)
+    parser.add_argument('--iterations', '-i', type=int, default=100)
+    parser.add_argument('--outfile', '-o', type=str)
+    parser.add_argument('--p_cite', type=float)
+    parser.add_argument('--n_authors', type=int)
+    parser.add_argument('--n_resources', type=int)
+    parser.add_argument('--n_links', type=int)
+
     args = parser.parse_args()
 
+    if args.outfile is None:
+        args.outfile = '{}_{}'.format(os.path.basename(args.config.name),
+                                      os.path.basename(args.policies.name))
     policies = json.load(args.policies)
+    for p in policies:
+        if p['type'] == 'greedy' and 'ties' not in p:
+            p['ties'] = 'random'
     config = json.load(args.config)
+    args_vars = vars(args)
+    for k in ['n_authors', 'n_resources', 'n_links', 'p_cite']:
+        if args_vars[k] is not None:
+            config[k] = args_vars[k]
+            args.outfile += '-{}_{}'.format(k, args_vars[k])
     run_exp(args.outfile, config=config, policies=policies,
             iterations=args.iterations)
 

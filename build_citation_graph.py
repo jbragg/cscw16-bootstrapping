@@ -45,6 +45,11 @@ def sample_resource_papers(paper_count, resource_count):
     return random.sample(range(1,paper_count+1), resource_count)
 
 def rich_get_richer(author_publication_count, p, link_count):
+    """Rich get richer model
+
+    Important: May produce fewer than link_count references.
+
+    """
 
     paper_count = sum(author_publication_count)
     paper_id_list = range(1,paper_count+1)

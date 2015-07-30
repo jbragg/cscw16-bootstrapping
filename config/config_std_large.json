@@ -1,0 +1,14 @@
+{
+    "n_authors": 100,
+    "n_resources": 100,
+    "n_links": 29,
+    "p_cite": 0.5,
+    "p_use": 0.45,
+    "p_response_used": 0.059,
+    "p_response_used_std": 0.025,
+    "p_response_used_bins": 5,
+    "p_response_unused": 0.016,
+    "p_response_unused_std": 0.005,
+    "p_response_unused_bins": 5,
+    "p_response_uncited": 0.0
+}
